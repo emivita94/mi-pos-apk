@@ -3,7 +3,7 @@ name: Compilar APK
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:   # permite compilar manualmente desde GitHub
+  workflow_dispatch:
 
 jobs:
   build:
@@ -19,11 +19,14 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Permisos a gradlew
-        run: chmod +x gradlew
+      - name: Instalar Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.4'
 
       - name: Compilar APK debug
-        run: ./gradlew assembleDebug
+        run: gradle assembleDebug
+        working-directory: .
 
       - name: Subir APK como artefacto
         uses: actions/upload-artifact@v4
