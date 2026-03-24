@@ -8,11 +8,9 @@
     <!-- Bluetooth Classic (SPP) -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-    <!-- Android 12+ requiere estos permisos adicionales -->
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"
-        android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
-        android:maxSdkVersion="32" />
+    <!-- Android 12+ — SIN maxSdkVersion para que aplique en Android 13+ también -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
 
     <!-- USB para impresoras OTG e internas -->
     <uses-permission android:name="android.permission.USB_PERMISSION" />

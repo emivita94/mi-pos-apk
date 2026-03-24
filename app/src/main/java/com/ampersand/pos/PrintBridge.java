@@ -4,6 +4,7 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothSocket;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.hardware.usb.UsbConstants;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
@@ -12,11 +13,9 @@ import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
 import android.os.Build;
 import android.webkit.JavascriptInterface;
-import android.widget.Toast;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Set;
 import java.util.UUID;
@@ -27,7 +26,7 @@ import java.util.UUID;
  *
  * Soporta:
  *   - Impresora interna de terminales (Vizzion, Sunmi, etc.) via USB interno
- *   - Bluetooth Classic (SPP) — el que Web Bluetooth NO puede usar
+ *   - Bluetooth Classic (SPP) — el que Web Bluetooth NO puede usar en WebView
  *   - USB externo via OTG
  */
 public class PrintBridge {
@@ -36,7 +35,7 @@ public class PrintBridge {
     private static final UUID SPP_UUID =
         UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
 
-    // Nombre de la impresora BT guardado (se setea desde JS)
+    // Nombre o dirección MAC de la impresora BT guardada (se setea desde JS)
     private String savedBtName = null;
 
     public PrintBridge(Context context) {
@@ -46,7 +45,7 @@ public class PrintBridge {
     /**
      * Imprime bytes ESC/POS.
      * @param base64data bytes del ticket en Base64
-     * llamado desde JS: window.AndroidPrint.print(btoa(String.fromCharCode(...bytes)))
+     * Llamado desde JS: window.AndroidPrint.print(base64String)
      */
     @JavascriptInterface
     public String print(String base64data) {
@@ -71,7 +70,7 @@ public class PrintBridge {
 
     /**
      * Guarda el nombre del dispositivo BT preferido desde JS.
-     * window.AndroidPrint.setBluetoothDevice("Bluetooth Printer")
+     * window.AndroidPrint.setBluetoothDevice("Nombre de mi impresora")
      */
     @JavascriptInterface
     public void setBluetoothDevice(String name) {
@@ -92,23 +91,39 @@ public class PrintBridge {
 
     /**
      * Lista impresoras BT emparejadas — devuelve JSON para mostrar en selector.
+     * Desde JS: JSON.parse(window.AndroidPrint.getPairedBtPrinters())
+     *
+     * Retorna array de objetos: [{name, address}, ...]
+     * O un objeto de error: {error: "mensaje"}
      */
     @JavascriptInterface
     public String getPairedBtPrinters() {
         try {
+            // Verificar permiso en Android 12+ antes de llamar a la API Bluetooth
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    return "[{\"error\":\"BLUETOOTH_CONNECT permission not granted — reinicia la app y acepta el permiso\"}]";
+                }
+            }
+
             BluetoothAdapter bt = BluetoothAdapter.getDefaultAdapter();
-            if (bt == null || !bt.isEnabled()) return "[]";
+            if (bt == null) return "[{\"error\":\"no_bluetooth_adapter\"}]";
+            if (!bt.isEnabled()) return "[{\"error\":\"bluetooth_disabled\"}]";
+
             Set<BluetoothDevice> bonded = bt.getBondedDevices();
             StringBuilder sb = new StringBuilder("[");
             for (BluetoothDevice d : bonded) {
                 if (sb.length() > 1) sb.append(",");
-                sb.append("{\"name\":\"").append(d.getName()).append("\",")
+                String name = d.getName() != null ? d.getName() : "Desconocido";
+                sb.append("{\"name\":\"").append(name).append("\",")
                   .append("\"address\":\"").append(d.getAddress()).append("\"}");
             }
             sb.append("]");
             return sb.toString();
+
         } catch (Exception e) {
-            return "[]";
+            return "[{\"error\":\"" + e.getMessage() + "\"}]";
         }
     }
 
@@ -121,18 +136,15 @@ public class PrintBridge {
     private boolean printInternal(byte[] data) {
         // Método 1: Sunmi InnerPrinter
         try {
-            Class<?> clazz = Class.forName("woyou.aidlservice.jiuiv5.IWoyouService");
-            // Si la clase existe, estamos en un Sunmi — delegar a SunmiPrinter
+            Class.forName("woyou.aidlservice.jiuiv5.IWoyouService");
             return SunmiPrinter.print(context, data);
         } catch (ClassNotFoundException ignored) {}
 
-        // Método 2: impresoras genéricas — buscar device interno por nombre
+        // Método 2: impresoras genéricas via USB interno
         try {
             UsbManager usbManager = (UsbManager) context.getSystemService(Context.USB_SERVICE);
             HashMap<String, UsbDevice> devices = usbManager.getDeviceList();
             for (UsbDevice device : devices.values()) {
-                // VendorID 0x0483 = STMicroelectronics (chip común en impresoras de terminales)
-                // VendorID 0x0416 = Winbond (otro chip común)
                 int vid = device.getVendorId();
                 if (vid == 0x0483 || vid == 0x0416 || vid == 0x6868 || vid == 0x0525) {
                     if (printToUsbDevice(usbManager, device, data)) return true;
@@ -151,7 +163,6 @@ public class PrintBridge {
             UsbManager usbManager = (UsbManager) context.getSystemService(Context.USB_SERVICE);
             HashMap<String, UsbDevice> devices = usbManager.getDeviceList();
             for (UsbDevice device : devices.values()) {
-                // Clase 7 = dispositivo de impresión (USB Printer Class)
                 for (int i = 0; i < device.getInterfaceCount(); i++) {
                     if (device.getInterface(i).getInterfaceClass() == UsbConstants.USB_CLASS_PRINTER) {
                         if (printToUsbDevice(usbManager, device, data)) return true;
@@ -190,7 +201,6 @@ public class PrintBridge {
 
             connection.claimInterface(usbInterface, true);
 
-            // Enviar en chunks de 16KB
             int CHUNK = 16384;
             for (int offset = 0; offset < data.length; offset += CHUNK) {
                 int len = Math.min(CHUNK, data.length - offset);
@@ -210,9 +220,17 @@ public class PrintBridge {
 
     /**
      * Impresión por Bluetooth Classic (SPP).
-     * Funciona con las impresoras genéricas que Web Bluetooth NO puede usar.
+     * Funciona con impresoras genéricas que Web Bluetooth NO puede usar en WebView.
      */
     private boolean printBluetooth(byte[] data) {
+        // Verificar permiso antes de intentar (Android 12+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)
+                    != PackageManager.PERMISSION_GRANTED) {
+                return false;
+            }
+        }
+
         BluetoothSocket socket = null;
         try {
             BluetoothAdapter bt = BluetoothAdapter.getDefaultAdapter();
@@ -221,9 +239,9 @@ public class PrintBridge {
             BluetoothDevice printer = findPrinter(bt);
             if (printer == null) return false;
 
-            // Conexión insegura — no requiere PIN ni emparejamiento previo en algunos casos
+            // Conexión insegura — no requiere PIN en algunos casos
             try {
-                Method m = printer.getClass().getMethod(
+                java.lang.reflect.Method m = printer.getClass().getMethod(
                     "createInsecureRfcommSocketToServiceRecord", UUID.class);
                 socket = (BluetoothSocket) m.invoke(printer, SPP_UUID);
             } catch (Exception e) {
@@ -235,16 +253,16 @@ public class PrintBridge {
 
             OutputStream out = socket.getOutputStream();
 
-            // Enviar en chunks pequeños para no saturar el buffer BT
+            // Enviar en chunks pequeños — crítico para impresoras BT baratas
             int CHUNK = 100;
             for (int i = 0; i < data.length; i += CHUNK) {
                 int len = Math.min(CHUNK, data.length - i);
                 out.write(data, i, len);
                 out.flush();
-                Thread.sleep(40); // pausa entre chunks — crítica para BT barato
-                if ((i / CHUNK + 1) % 10 == 0) Thread.sleep(100); // pausa extra cada 10 chunks
+                Thread.sleep(40);
+                if ((i / CHUNK + 1) % 10 == 0) Thread.sleep(100);
             }
-            Thread.sleep(300); // pausa final
+            Thread.sleep(300); // pausa final para que la impresora procese
             return true;
 
         } catch (Exception e) {
@@ -259,14 +277,18 @@ public class PrintBridge {
     private BluetoothDevice findPrinter(BluetoothAdapter bt) {
         Set<BluetoothDevice> bonded = bt.getBondedDevices();
 
-        // Si hay un nombre guardado, buscar exacto
+        // Si hay un nombre guardado desde JS, buscar exacto primero
         if (savedBtName != null) {
             for (BluetoothDevice d : bonded) {
                 if (savedBtName.equalsIgnoreCase(d.getName())) return d;
             }
+            // También intentar por dirección MAC (si el JS guarda la dirección)
+            for (BluetoothDevice d : bonded) {
+                if (savedBtName.equalsIgnoreCase(d.getAddress())) return d;
+            }
         }
 
-        // Buscar por nombre conocido de impresoras térmicas
+        // Buscar por nombres conocidos de impresoras térmicas
         String[] knownNames = {
             "Bluetooth Printer", "BlueTooth Printer", "Printer",
             "MTP-II", "MTP-3", "RPP02", "RPP300",
