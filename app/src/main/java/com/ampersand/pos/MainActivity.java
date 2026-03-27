@@ -1,114 +1,175 @@
 package com.ampersand.pos;
 
-import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.net.Uri;
-import android.os.Build;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothSocket;
 import android.os.Bundle;
-import android.view.KeyEvent;
-import android.view.Window;
-import android.webkit.WebChromeClient;
-import android.webkit.WebResourceRequest;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Base64;
+import android.util.Log;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.WebChromeClient;
+import android.view.KeyEvent;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.util.Set;
+import java.util.UUID;
 
 public class MainActivity extends Activity {
 
-    private WebView webView;
-    private static final String POS_URL = "https://mi-pos.emvitta.workers.dev";
-    private static final int REQ_BT = 1001;
+    private static final String TAG = "AmpersandPOS";
+    private static final String APP_URL = "https://mi-pos.emvitta.workers.dev";
+    // UUID SPP estándar para IposPrinter
+    private static final UUID SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb");
 
-    @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
+    private WebView webView;
+    private BluetoothSocket btSocket;
+    private BluetoothDevice iposPrinter;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        // Pantalla completa sin barra de título
-        requestWindowFeature(Window.FEATURE_NO_TITLE);
-
         setContentView(R.layout.activity_main);
-
-        // Pedir permisos Bluetooth en runtime (Android 12+ / SDK 31+)
-        requestBluetoothPermissions();
 
         webView = findViewById(R.id.webview);
 
         // Configurar WebView
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);        // localStorage
-        settings.setDatabaseEnabled(true);          // IndexedDB (Dexie)
-        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
         settings.setAllowFileAccess(true);
+        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        settings.setUserAgentString(
-            settings.getUserAgentString() + " AmpersandPOS/1.0"
-        );
 
-        // Inyectar el puente de impresión — accesible como window.AndroidPrint en JS
-        PrintBridge printBridge = new PrintBridge(this);
-        webView.addJavascriptInterface(printBridge, "AndroidPrint");
+        // Exponer el puente AndroidPrint al JavaScript
+        webView.addJavascriptInterface(new PrinterBridge(), "AndroidPrint");
 
-        // Evitar que links externos abran Chrome
-        webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
-                String url = req.getUrl().toString();
-                // Permitir navegación interna dentro del POS
-                if (url.startsWith("https://mi-pos.emvitta.workers.dev") ||
-                    url.startsWith("https://kmreiniqgcvqgdtzvmel.supabase.co")) {
-                    return false;
-                }
-                // Links externos — abrir en Chrome
-                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-                return true;
-            }
-
-            @Override
-            public void onReceivedError(WebView view, int errorCode,
-                                        String description, String failingUrl) {
-                // Sin conexión — mostrar página offline
-                view.loadUrl("about:blank");
-                view.loadUrl("javascript:document.body.innerHTML='<div style=\"font-family:sans-serif;text-align:center;padding:40px;color:#ccc\"><h2>Sin conexión</h2><p>Verificá tu conexión a internet</p><button onclick=\"window.location.reload()\" style=\"padding:12px 24px;background:#4caf50;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer\">Reintentar</button></div>'");
-            }
-        });
-
-        // Soporte para alerts y confirms de JS
+        webView.setWebViewClient(new WebViewClient());
         webView.setWebChromeClient(new WebChromeClient());
 
-        // Cargar el POS
-        webView.loadUrl(POS_URL);
+        // Buscar IposPrinter al iniciar
+        buscarIposPrinter();
+
+        // Cargar la app
+        webView.loadUrl(APP_URL);
     }
 
-    /**
-     * Solicita permisos Bluetooth en tiempo de ejecución.
-     * En Android 12+ (SDK 31+) BLUETOOTH_CONNECT y BLUETOOTH_SCAN son permisos
-     * "dangerous" y deben pedirse explícitamente al usuario.
-     */
-    private void requestBluetoothPermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { // SDK 31 = Android 12
-            String[] perms = {
-                android.Manifest.permission.BLUETOOTH_CONNECT,
-                android.Manifest.permission.BLUETOOTH_SCAN
-            };
-            boolean needRequest = false;
-            for (String p : perms) {
-                if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) {
-                    needRequest = true;
+    // Buscar IposPrinter entre los dispositivos BT emparejados
+    private void buscarIposPrinter() {
+        try {
+            BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+            if (adapter == null || !adapter.isEnabled()) return;
+            Set<BluetoothDevice> paired = adapter.getBondedDevices();
+            for (BluetoothDevice device : paired) {
+                String name = device.getName();
+                if (name != null && (name.equalsIgnoreCase("IposPrinter")
+                        || name.toLowerCase().contains("ipos")
+                        || name.toLowerCase().contains("pos58"))) {
+                    iposPrinter = device;
+                    Log.d(TAG, "IposPrinter encontrada: " + name);
                     break;
                 }
             }
-            if (needRequest) {
-                requestPermissions(perms, REQ_BT);
+        } catch (Exception e) {
+            Log.e(TAG, "Error buscando impresora: " + e.getMessage());
+        }
+    }
+
+    // Conectar a IposPrinter via Bluetooth
+    private boolean conectar() {
+        if (iposPrinter == null) {
+            buscarIposPrinter();
+            if (iposPrinter == null) return false;
+        }
+        try {
+            if (btSocket != null && btSocket.isConnected()) return true;
+            btSocket = iposPrinter.createRfcommSocketToServiceRecord(SPP_UUID);
+            BluetoothAdapter.getDefaultAdapter().cancelDiscovery();
+            btSocket.connect();
+            return true;
+        } catch (IOException e) {
+            Log.e(TAG, "Error conectando: " + e.getMessage());
+            btSocket = null;
+            return false;
+        }
+    }
+
+    // Puente JavaScript → Android → IposPrinter
+    class PrinterBridge {
+
+        // Imprimir bytes ESC/POS en Base64
+        @JavascriptInterface
+        public String print(String base64Data) {
+            try {
+                byte[] bytes = Base64.decode(base64Data, Base64.DEFAULT);
+                if (!conectar()) return "ERROR: No se pudo conectar a IposPrinter";
+                OutputStream out = btSocket.getOutputStream();
+                out.write(bytes);
+                out.flush();
+                return "OK";
+            } catch (Exception e) {
+                Log.e(TAG, "Error imprimiendo: " + e.getMessage());
+                btSocket = null;
+                return "ERROR: " + e.getMessage();
+            }
+        }
+
+        // Listar impresoras BT emparejadas
+        @JavascriptInterface
+        public String getPairedBtPrinters() {
+            try {
+                BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+                if (adapter == null) return "[]";
+                Set<BluetoothDevice> paired = adapter.getBondedDevices();
+                StringBuilder sb = new StringBuilder("[");
+                boolean first = true;
+                for (BluetoothDevice d : paired) {
+                    if (!first) sb.append(",");
+                    sb.append("{\"name\":\"").append(d.getName()).append("\",")
+                      .append("\"address\":\"").append(d.getAddress()).append("\"}");
+                    first = false;
+                }
+                sb.append("]");
+                return sb.toString();
+            } catch (Exception e) {
+                return "[]";
+            }
+        }
+
+        // Seleccionar impresora por nombre
+        @JavascriptInterface
+        public void setBluetoothDevice(String name) {
+            try {
+                BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+                if (adapter == null) return;
+                Set<BluetoothDevice> paired = adapter.getBondedDevices();
+                for (BluetoothDevice d : paired) {
+                    if (name.equals(d.getName())) {
+                        iposPrinter = d;
+                        // Cerrar socket anterior
+                        if (btSocket != null) {
+                            try { btSocket.close(); } catch (Exception ignored) {}
+                            btSocket = null;
+                        }
+                        Log.d(TAG, "Impresora seleccionada: " + name);
+                        return;
+                    }
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error seleccionando impresora: " + e.getMessage());
             }
         }
     }
 
-    // Botón atrás navega en el historial de la WebView
+    // Botón atrás navega en el WebView
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
@@ -118,16 +179,11 @@ public class MainActivity extends Activity {
         return super.onKeyDown(keyCode, event);
     }
 
-    // Mantener sesión al rotar pantalla
     @Override
-    protected void onSaveInstanceState(Bundle outState) {
-        super.onSaveInstanceState(outState);
-        webView.saveState(outState);
-    }
-
-    @Override
-    protected void onRestoreInstanceState(Bundle savedInstanceState) {
-        super.onRestoreInstanceState(savedInstanceState);
-        webView.restoreState(savedInstanceState);
+    protected void onDestroy() {
+        super.onDestroy();
+        if (btSocket != null) {
+            try { btSocket.close(); } catch (Exception ignored) {}
+        }
     }
 }

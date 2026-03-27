@@ -2,43 +2,32 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.ampersand.pos">
 
-    <!-- Internet para cargar la PWA -->
     <uses-permission android:name="android.permission.INTERNET" />
-
-    <!-- Bluetooth Classic (SPP) -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-    <!-- Android 12+ — SIN maxSdkVersion para que aplique en Android 13+ también -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-
-    <!-- USB para impresoras OTG e internas -->
-    <uses-permission android:name="android.permission.USB_PERMISSION" />
-
-    <!-- Mantener CPU activa mientras imprime -->
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application
-        android:allowBackup="false"
-        android:icon="@drawable/ic_launcher"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
         android:label="Ampersand POS"
         android:theme="@style/AppTheme"
-        android:usesCleartextTraffic="false"
+        android:usesCleartextTraffic="true"
         android:hardwareAccelerated="true">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:screenOrientation="portrait"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:windowSoftInputMode="adjustResize">
-
+            android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
     </application>
 
 </manifest>

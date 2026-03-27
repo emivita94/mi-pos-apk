@@ -8,19 +8,16 @@ android {
 
     defaultConfig {
         applicationId "com.ampersand.pos"
-        minSdk 21          // Android 5.0 — cubre Vizzion (Android 6) y todo lo moderno
+        minSdk 21
         targetSdk 34
         versionCode 1
-        versionName "1.0.0"
+        versionName "1.1.0"
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug  // Para pruebas — en producción usar keystore propio
-        }
-        debug {
-            debuggable true
+            signingConfig signingConfigs.debug
         }
     }
 
@@ -31,5 +28,5 @@ android {
 }
 
 dependencies {
-    // Sin dependencias externas — todo es Android SDK nativo
+    implementation 'androidx.appcompat:appcompat:1.6.1'
 }
